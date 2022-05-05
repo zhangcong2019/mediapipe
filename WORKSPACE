@@ -194,6 +194,12 @@ new_local_repository(
 )
 
 new_local_repository(
+    name = "inference_engine",
+    build_file = "@//third_party:inference_engine.BUILD",
+    path = "/usr/local",
+)
+
+new_local_repository(
     name = "linux_ffmpeg",
     build_file = "@//third_party:ffmpeg_linux.BUILD",
     path = "/usr"
