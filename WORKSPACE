@@ -196,7 +196,7 @@ new_local_repository(
 new_local_repository(
     name = "inference_engine",
     build_file = "@//third_party:inference_engine.BUILD",
-    path = "/usr/local",
+    path = "/opt/intel/openvino_2021/deployment_tools/inference_engine",
 )
 
 new_local_repository(
