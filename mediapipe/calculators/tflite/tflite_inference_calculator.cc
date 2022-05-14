@@ -12,6 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "ie_transformations.hpp"
+#include "ie_compound_blob.h"
+#include "ie_core.hpp"
+
 #include <cstring>
 #include <memory>
 #include <string>
@@ -444,6 +448,9 @@ absl::Status TfLiteInferenceCalculator::Process(CalculatorContext* cc) {
     } else {
       MP_RETURN_IF_ERROR(ProcessInputsCpu(cc, output_tensors_cpu.get()));
     }
+
+    using namespace InferenceEngine;
+    Core ie;
 
     // 2. Run inference.
 #if MEDIAPIPE_TFLITE_GL_INFERENCE

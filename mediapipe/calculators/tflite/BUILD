@@ -208,6 +208,8 @@ cc_library(
     }),
     visibility = ["//visibility:public"],
     deps = [
+        "//mediapipe/framework/port:opencv_highgui",
+        "@inference_engine//:inference_engine",
         ":tflite_inference_calculator_cc_proto",
         "@com_google_absl//absl/memory",
         "//mediapipe/framework:calculator_framework",
