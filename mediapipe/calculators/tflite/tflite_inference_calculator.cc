@@ -16,6 +16,9 @@
 #include "ie_compound_blob.h"
 #include "ie_core.hpp"
 
+#include "mediapipe/framework/port/opencv_core_inc.h"
+#include <opencv2/highgui.hpp>
+
 #include <cstring>
 #include <memory>
 #include <string>
@@ -436,11 +439,17 @@ absl::Status TfLiteInferenceCalculator::Open(CalculatorContext* cc) {
   return absl::OkStatus();
 }
 
+float* ptrInput;
+float* ptrOutputLoc;
+float* ptrOutputConf;
+
 absl::Status TfLiteInferenceCalculator::Process(CalculatorContext* cc) {
   return RunInContextIfNeeded([this, cc]() -> absl::Status {
     // 0. Declare outputs
     auto output_tensors_gpu = absl::make_unique<std::vector<GpuTensor>>();
     auto output_tensors_cpu = absl::make_unique<std::vector<TfLiteTensor>>();
+
+
 
     // 1. Receive pre-processed tensor inputs.
     if (gpu_input_) {
@@ -451,6 +460,108 @@ absl::Status TfLiteInferenceCalculator::Process(CalculatorContext* cc) {
 
     using namespace InferenceEngine;
     Core ie;
+    CNNNetwork network = ie.ReadNetwork("/opt/intel/openvino_2021.4.582/deployment_tools/open_model_zoo/tools/downloader/public/ssd_mobilenet_v2_coco/FP32/ssd_mobilenet_v2_coco.xml");
+
+    network.addOutput("do_reshape_conf");
+    network.addOutput("do_reshape_loc");
+
+    InputsDataMap inputInfo(network.getInputsInfo());
+    if (inputInfo.size() != 1)
+        throw std::logic_error("Sample supports topologies with 1 input only");
+
+    auto inputInfoItem = *inputInfo.begin();
+
+    /** Specifying the precision and layout of input data provided by the user.
+     * This should be called before load of the network to the device **/
+    inputInfoItem.second->setPrecision(Precision::FP32);
+    inputInfoItem.second->setLayout(Layout::NHWC);
+
+    ExecutableNetwork executable_network = ie.LoadNetwork(network, "CPU");
+
+    InferRequest inferRequest = executable_network.CreateInferRequest();
+
+
+    cv::Mat inputImg(300, 300, CV_8UC3);
+    for (int i = 0; i < 300; i++)
+    {
+      for (int j = 0; j < 300; j++)
+      {
+        for (int c = 0; c < 3; c++)
+        {
+          inputImg.data[i*300 * 3 + j * 3 + c] = ptrInput[i*300 * 3 + j * 3 + 2 - c] * 127 + 127;
+          // printf("value is %f\n", ptrInput[i*300 * 3 + j * 3 + c]);
+        }
+
+      }
+    }
+    
+    cv::imshow("input", inputImg);
+    cv::waitKey(30);
+
+
+    for (auto& item : inputInfo) {
+      Blob::Ptr inputBlob = inferRequest.GetBlob(item.first);
+      SizeVector dims = inputBlob->getTensorDesc().getDims();
+      auto layout = inputBlob->getTensorDesc().getLayout();
+      printf("layout of inputBlob is %d\n", layout);
+      /** Fill input tensor with images. First b channel, then g and r channels
+       * **/
+      size_t num_channels = dims[1];
+      printf("number of channels is %d\n", num_channels);
+      size_t image_size = dims[3] * dims[2];
+      printf("image size is %d\n", image_size);
+
+      MemoryBlob::Ptr minput = as<MemoryBlob>(inputBlob);
+      if (!minput) {
+          std::cerr << "We expect MemoryBlob from inferRequest, but by fact we "
+                        "were not able to cast inputBlob to MemoryBlob"
+                    << std::endl;
+      }
+      // locked memory holder should be alive all time while access to its
+      // buffer happens
+      auto minputHolder = minput->wmap();
+
+      auto data = minputHolder.as<PrecisionTrait<Precision::FP32>::value_type*>();
+      if (data == nullptr)
+          throw std::runtime_error("Input blob has not allocated buffer");
+      /** Iterate over all input images **/
+      {
+          /** Iterate over all pixel in image (b,g,r) **/
+          for (size_t pid = 0; pid < image_size; pid++) {
+              /** Iterate over all channels **/
+              for (size_t ch = 0; ch < num_channels; ++ch) {
+                  /**          [images stride + channels stride + pixel id ] all in
+                   * bytes            **/
+                  data[ch * image_size + pid] = (ptrInput[ch * image_size + pid] + 1) / 0.00784313771874;
+              }
+          }
+      }
+    }
+
+    inferRequest.Infer();
+
+    OutputsDataMap outputInfo(network.getOutputsInfo());
+
+    if (outputInfo.empty())
+      throw std::runtime_error("Can't get output blobs");
+    for(auto& output:outputInfo)
+    {
+      printf("output name is %s\n", output.first.c_str());
+    }
+
+    Blob::Ptr outputBlobConf = inferRequest.GetBlob("do_reshape_conf");
+    Blob::Ptr outputBlobLoc = inferRequest.GetBlob("do_reshape_loc");
+    printf("outputBlobConf size is %ld\n", outputBlobConf->size());
+    printf("outputBlobLoc size is %ld\n", outputBlobLoc->size());
+
+    auto memBlobConf = as<MemoryBlob>(outputBlobConf);
+    auto mapBlobConf = memBlobConf->wmap();
+    ptrOutputConf = mapBlobConf.as<PrecisionTrait<Precision::FP32>::value_type*>();
+    
+    auto memBlobLoc = as<MemoryBlob>(outputBlobLoc);
+    auto mapBlobLoc = memBlobLoc->wmap();
+    ptrOutputLoc = mapBlobLoc.as<PrecisionTrait<Precision::FP32>::value_type*>();
+
 
     // 2. Run inference.
 #if MEDIAPIPE_TFLITE_GL_INFERENCE
@@ -546,11 +657,14 @@ absl::Status TfLiteInferenceCalculator::ProcessInputsCpu(
       uint8* local_tensor_buffer = interpreter_->typed_input_tensor<uint8>(i);
       std::memcpy(local_tensor_buffer, input_tensor_buffer,
                   input_tensor->bytes);
+
     } else {
       const float* input_tensor_buffer = input_tensor->data.f;
       float* local_tensor_buffer = interpreter_->typed_input_tensor<float>(i);
       std::memcpy(local_tensor_buffer, input_tensor_buffer,
                   input_tensor->bytes);
+
+      ptrInput = local_tensor_buffer;
     }
   }
 
@@ -636,6 +750,38 @@ absl::Status TfLiteInferenceCalculator::ProcessOutputsCpu(
   const auto& tensor_indexes = interpreter_->outputs();
   for (int i = 0; i < tensor_indexes.size(); ++i) {
     TfLiteTensor* tensor = interpreter_->tensor(tensor_indexes[i]);
+
+    for (int ii = 0; ii < 3; ii++)
+    {
+      printf("dim value is %d\n", tensor->dims->data[ii]);
+    }
+    if(i == 0)
+    {
+      for (int ii = 0; ii < 7668; ii++)
+      {
+        float tf = tensor->data.f[ii];
+        float ov = ptrOutputLoc[ii];
+
+        //printf("loc tf is %f, ov is %f, diff is %f\n", tf, ov, tf - ov);
+      }
+      
+      memset(tensor->data.f, 0, 7668 * 4);
+      memcpy(tensor->data.f, ptrOutputLoc, 7668*4);
+
+    }
+    else if(i == 1)
+    {
+      for (int ii = 0; ii < 174447; ii++)
+      {
+        float tf = tensor->data.f[ii];
+        float ov = ptrOutputConf[ii];
+
+        //printf("conf tf is %f, ov is %f, diff is %f\n", tf, ov, tf - ov);
+      }
+
+      memset(tensor->data.f, 0, 174447 * 4);
+      memcpy(tensor->data.f, ptrOutputConf, 174447 * 4);
+    }
     output_tensors_cpu->emplace_back(*tensor);
   }
   cc->Outputs()
